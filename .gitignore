@@ -1,0 +1,33 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[co]
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env/
+
+# Editor/OS files
+.DS_Store # macOS
+.vscode/ # VS Code configuration (optional, if shared config is not needed)
+*.swp # Vim swap files
+
+# Environment variables file (contains secrets)
+.env
+
+# Testing/coverage
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+
+# Packaging/distribution
+dist/
+build/
+*.egg-info/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
