@@ -2,16 +2,12 @@
 export_map.py
  
 Single file that does everything:
-  1. Runs the Go2 blueprint (same as `dimos run unitree-go2`)
+  1. Runs the Go2 blueprint automatically instead of having a seperate terminal
   2. Captures the map from CostMapper in real time
   3. On Ctrl-C: saves the map as .pgm / .yaml / .png
-  4. Auto-straightens it so the longest wall is always horizontal
-  5. Prints the next command to run for zone editing
- 
-Usage:
-  export ROBOT_IP=192.168.1.xxx
-  source .venv/bin/activate
-  python run_and_export.py
+  4. Orientates it to match other maps
+  5. Prints the next command to run for zone editing (work in progress)
+
 """
  
 from __future__ import annotations
@@ -21,30 +17,18 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
- 
 import numpy as np
- 
-try:
-    from PIL import Image
-except ImportError:
-    sys.exit("pip install Pillow")
- 
-try:
-    import cv2
-except ImportError:
-    sys.exit("pip install opencv-python-headless")
- 
+from PIL import Image
+import cv2
 from dimos.robot.unitree.go2.blueprints.smart.unitree_go2 import unitree_go2
 from dimos.mapping.costmapper import CostMapper
  
-RAW_DIR       = Path("./maps/raw")
+RAW_DIR = Path("./maps/raw")
 CORRECTED_DIR = Path("./maps/corrected")
-_latest_map   = None
+_latest_map = None
  
- 
-# ---------------------------------------------------------------------------
-# Map straightening
-# ---------------------------------------------------------------------------
+# The following methods below aid in orientating the map (more adjustments
+# to be made to make fully horizontal).
  
 def _find_longest_wall_angle(img: np.ndarray) -> float | None:
     """Return angle (degrees) of the longest detected wall line, or None."""
@@ -63,6 +47,7 @@ def _find_longest_wall_angle(img: np.ndarray) -> float | None:
         minLineLength=20,
         maxLineGap=10,
     )
+
     if lines is None or len(lines) == 0:
         return None
  
@@ -100,10 +85,6 @@ def _rotate_map(img: np.ndarray, angle_deg: float) -> np.ndarray:
  
  
 def _straighten(img: np.ndarray, meta: dict) -> tuple[np.ndarray, dict]:
-    """
-    Rotate map so longest wall is horizontal.
-    Returns (rotated_image, updated_meta).
-    """
     wall_angle = _find_longest_wall_angle(img)
  
     if wall_angle is None:
@@ -138,13 +119,10 @@ def _straighten(img: np.ndarray, meta: dict) -> tuple[np.ndarray, dict]:
  
     return rotated, updated_meta
  
- 
-# ---------------------------------------------------------------------------
-# Map saving
-# ---------------------------------------------------------------------------
+# Saves the map to the associated directories based on raw or corrected
  
 def _save_map(img: np.ndarray, meta: dict, stem: str, out_dir: Path) -> dict[str, Path]:
-    """Save .pgm, .yaml, and colour .png. Returns dict of paths."""
+    # Saves all the different files to their associated directories (.pgm, .png, .yaml
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
  
@@ -220,9 +198,7 @@ def save_and_straighten(msg) -> None:
     print(f"  python map_tool.py --map {straight_paths['pgm']}")
  
  
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+# Main method that controls running the blueprint and collecting the data
  
 def main() -> None:
     print("[setup] Building Go2 blueprint ...")
