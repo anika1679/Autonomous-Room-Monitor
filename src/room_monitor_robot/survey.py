@@ -21,7 +21,7 @@ import time
 import threading
 from datetime import datetime
 from pathlib import Path
- 
+import random 
 import numpy as np
 from PIL import Image
 import cv2
@@ -32,13 +32,15 @@ from dimos.mapping.costmapper import CostMapper
 from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
 
 unitree_go2 = unitree_go2.global_config(
-    robot_width=0.80,
+    robot_width=0.8,
     robot_rotation_diameter=0.8,
 )
 RAW_DIR       = Path("./maps/raw")
 CORRECTED_DIR = Path("./maps/corrected")
 _latest_map   = None
- 
+MAX_ATTEMPTS_PER_GOAL = 3
+OFFSET_RANGE = 1.2  # meters
+REACHED_TIMEOUT = 12.0 
  
 # ---------------------------------------------------------------------------
 # Navigation helpers
@@ -188,37 +190,31 @@ def save_and_straighten(msg) -> None:
     print(f"\nNext step:  python map_tool.py --map {straight_paths['pgm']}")
  
  
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
- 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--zones", type=Path, required=True,
                         help="zones.json from map_tool.py")
     args = parser.parse_args()
- 
+
     if not args.zones.exists():
         sys.exit(f"zones.json not found: {args.zones}")
- 
-    payload    = json.loads(args.zones.read_text())
+
+    payload = json.loads(args.zones.read_text())
     start_pose = payload.get("start_pose")
- 
+
     if not start_pose:
         sys.exit("No start_pose in zones.json — set the start marker in map_tool.py first")
- 
+
     sx, sy = start_pose["world"]
     print(f"[setup] Start pose: ({sx:.3f}, {sy:.3f})")
- 
-    # ── Boot ─────────────────────────────────────────────────────────────────
+
+    # ── Boot the robot ─────────────────────────────────────────────
     print("[setup] Building Go2 blueprint ...")
     coordinator = unitree_go2.build()
- 
-    # ── Subscribe to costmap ─────────────────────────────────────────────────
+
+    # ── Subscribe to costmap ───────────────────────────────────────
     cost_mapper = coordinator.get_instance(CostMapper)
-    if cost_mapper is None:
-        print("[warn] CostMapper not found — map will not be saved")
-    else:
+    if cost_mapper is not None:
         def on_costmap(msg) -> None:
             global _latest_map
             _latest_map = msg
@@ -228,52 +224,66 @@ def main() -> None:
                   end="", flush=True)
         cost_mapper.global_costmap.subscribe(on_costmap)
         print("[setup] CostMapper found — map will be saved on Ctrl-C")
- 
-    # ── Shutdown handler ─────────────────────────────────────────────────────
+    else:
+        print("[warn] CostMapper not found — map will not be saved")
+
+    # ── Shutdown handler ───────────────────────────────────────────
     def shutdown(sig, frame) -> None:
-        print("\n\n[shutdown] Saving map ...")
+        print("\n[shutdown] Saving map ...")
         if _latest_map is not None:
             save_and_straighten(_latest_map)
         else:
             print("[shutdown] No map received yet")
         sys.exit(0)
- 
-    signal.signal(signal.SIGINT,  shutdown)
+
+    signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
- 
-    # ── Wait for modules ─────────────────────────────────────────────────────
-    print("[setup] Waiting for modules to stabilise ...")
+
+    # ── Wait for modules to initialize ─────────────────────────────
+    print("[setup] Waiting for modules to stabilize ...")
     time.sleep(5)
- 
-    # ── Navigate to start pose ───────────────────────────────────────────────
+
+    # ── Navigate to start pose ─────────────────────────────────────
     planner = coordinator.get_instance(ReplanningAStarPlanner)
     if planner is None:
         print("[warn] ReplanningAStarPlanner not found — skipping start pose")
     else:
-        print(f"\n[nav] Moving to start pose ({sx:.2f}, {sy:.2f}) facing wall ...")
+        print(f"\n[nav] Moving to start pose ({sx:.2f}, {sy:.2f}) ...")
         goal = make_pose_stamped(sx, sy, yaw_deg=90.0)
         planner.goal_request.publish(goal)
- 
+
         reached = threading.Event()
         def on_reached(msg) -> None:
             if getattr(msg, "data", False):
                 reached.set()
         planner.goal_reached.subscribe(on_reached)
- 
         reached.wait(timeout=60.0)
         print("[nav] At start pose ✓" if reached.is_set()
               else "[nav] Timeout — continuing anyway")
- 
-    # ── Autonomous exploration ───────────────────────────────────────────────
-    print("\n[nav] Autonomous exploration running. Press Ctrl-C to stop and save map.\n")
- 
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        shutdown(None, None)
- 
- 
+
+        # ── Move through all zone centroids ─────────────────────────
+        for zone in payload.get("zones", []):
+            centroid = zone.get("centroid_world")
+            if centroid is None:
+                print(f"[warn] No centroid for zone {zone.get('name', zone.get('zone_id'))} — skipping")
+                continue
+
+            goal_x, goal_y = centroid
+            print(f"[nav] Moving to zone '{zone.get('name', '')}' at ({goal_x:.2f}, {goal_y:.2f}) ...")
+            goal = make_pose_stamped(goal_x, goal_y)
+            planner.goal_request.publish(goal)
+
+            reached.clear()
+            reached.wait(timeout=60.0)
+            print(f"[nav] Reached zone '{zone.get('name', '')}'" if reached.is_set()
+                  else f"[nav] Timeout — moving to next zone")
+
+    # ── Exploration finished ──────────────────────────────────────
+    print("\n[nav] All zones visited — saving final map ...")
+    if _latest_map is not None:
+        save_and_straighten(_latest_map)
+    print("[nav] Done")
+
+
 if __name__ == "__main__":
     main()
- 
